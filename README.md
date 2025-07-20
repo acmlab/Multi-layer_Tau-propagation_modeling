@@ -2,7 +2,7 @@
 
 
 
-# 📊 Statistical Models for Multi-layer Tau Propagation Modeling
+# 📊 Statistical Models
 
 This folder contains MATLAB scripts for statistical analysis of tau propagation patterns across the brain using structural and functional connectivity, gene expression, and demographic factors. Each script targets a specific aspect of modeling, correlation, or group difference testing.
 
