@@ -109,8 +109,7 @@ The model integrates:
 ## 📥 Input
 
 - Baseline tau SUVR vector `x⁰`
-- SC and FC adjacency matrices
-- Regional annotations (optional)
+- SC and FC adjacency matrices `F and S`
 
 ## 📤 Output
 
