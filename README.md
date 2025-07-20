@@ -119,9 +119,5 @@ The model integrates:
 ## 🧪 Usage
 
 ```bash
-python train.py
+python model_prediction.py
 
-
-
-## 📌 Citation
-If you use this code, please cite the corresponding publication (to be added).
