@@ -82,6 +82,45 @@ Stratified analysis of tau propagation in **US vs. UF regions** across **sex** a
 
 ---
 
+# 🧠 SC-FC Multi-layer Tau Propagation Model
+
+This folder contains the implementation of the **closed-loop feedback multi-layer neural transport model** for tau propagation modeling, as illustrated in **Fig. 9** of the manuscript.
+
+## 🔍 Overview
+
+The model integrates:
+
+- **Graph Convolutional Networks (GCN)** to extract network-informed features from structural and functional connectivity
+- **Linear Quadratic Regulators (LQR)** for feedback control over propagation dynamics
+- **PDE-based transport modeling** for SC-specific and FC-specific tau diffusion
+- **Multi-Layer Perceptron (MLP)** for prediction of tau accumulation at the next time point
+
+## 🧱 Key Components
+
+- `GCN_layers.py` – Graph convolutional layers for SC/FC networks  
+- `control_constrints.py` – Feedback control using LQR  
+- `model_prediction.py` – Core model forward propagation combining PDE solver and control  
+- `train.py` – Training script with loss functions and optimizer  
+- `dataset.py` – Custom dataset loader for input SUVRs and network matrices  
+- `5fold.py` – Cross-validation framework  
+- `utils.py` – Helper functions for training, evaluation, etc.  
+- `optimal_control/` & `wirings/` – Additional modules for control system implementation and parameter setup
+
+## 📥 Input
+
+- Baseline tau SUVR vector `x⁰`
+- SC and FC adjacency matrices
+- Regional annotations (optional)
+
+## 📤 Output
+
+- Predicted tau SUVR vector `x¹` at the next time point
+- Disentangled SC-driven and FC-driven propagation terms
+
+## 🧪 Usage
+
+```bash
+python train.py
 
 
 
