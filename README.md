@@ -1,4 +1,4 @@
-# Multi-layer_Tau-propagation_modeling
+# Understanding Mechanistic Role of Structural and Functional Connectivity in Tau Propagation Through Multi-Layer Modeling
 
 
 
