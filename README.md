@@ -19,7 +19,7 @@ Fits **Generalized Additive Models (GAMs)** to model the effect of **age**, **se
 
 ---
 
-### `corrNeighbor_deltatau.m`
+### `corrNeighbor_tau.m`
 Computes correlations between regional tau accumulation and the **mean tau of its neighbors** (based on FC or SC).
 
 - Outputs:
@@ -29,10 +29,10 @@ Computes correlations between regional tau accumulation and the **mean tau of it
 ---
 
 ### `corrNeighbor_lobes.m`
-Analyzes **system-level associations** between each region’s tau and the mean tau in neighbors from each **Yeo7** or **Mesulam** cortical system.
+Analyzes **lobe-level associations** between each region’s tau and the mean tau in neighbors from each **7** or **13** cortical system.
 
 - Outputs:
-  - 7×7 (Yeo7) and 13×13 (Mesulam) correlation matrices
+  - 7×7 and 13×13 correlation matrices
   - FDR-corrected p-values
   - Correlation heatmap visualizations
 
