@@ -155,7 +155,18 @@ class AverageMeter:
         self.sum += val * n
         self.count += n
         self.avg = self.sum / self.count if self.count else 0
-
+        
+def normalize_graph(adj, use_laplacian=False):
+    adj = torch.clamp(adj, min=0.0)
+    I = torch.eye(adj.shape[-1], device=adj.device, dtype=adj.dtype)
+    adj = adj + I
+    
+    d_inv_sqrt = torch.pow(adj.sum(dim=-1), -0.5)
+    d_inv_sqrt[torch.isinf(d_inv_sqrt)] = 0.0
+    
+    norm_adj = adj * d_inv_sqrt.unsqueeze(-1) * d_inv_sqrt.unsqueeze(-2)
+    
+    return I - norm_adj if use_laplacian else norm_adj
 
 def plot_epochs(fname, data, epochs, xlabel, ylabel, legends, max=True):
     plt.figure()
