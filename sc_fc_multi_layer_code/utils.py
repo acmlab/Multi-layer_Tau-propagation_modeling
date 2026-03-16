@@ -142,17 +142,25 @@ def spd_pad(matrix, padding, padding_val=1e-4):
     out[..., :matrix.shape[-2], :matrix.shape[-1]] = matrix
     return out
 
-def normalize_graph(adj, use_laplacian=False):
-    adj = torch.clamp(adj, min=0.0)
-    I = torch.eye(adj.shape[-1], device=adj.device, dtype=adj.dtype)
-    adj = adj + I
+def normalize_graph_matrix(adj_matrix, use_laplacian=False):
+
+    A = torch.clamp(adj_matrix, min=0.0)
+    I = torch.eye(A.size(0), device=A.device)
+    A = A + I
+    # D_ii = sum_j A_ij
+    D = torch.sum(A, dim=1)
+    D_inv_sqrt = torch.pow(D, -0.5)
+    D_inv_sqrt[torch.isinf(D_inv_sqrt)] = 0.0
+    D_inv_sqrt_mat = torch.diag(D_inv_sqrt)
     
-    d_inv_sqrt = torch.pow(adj.sum(dim=-1), -0.5)
-    d_inv_sqrt[torch.isinf(d_inv_sqrt)] = 0.0
+    norm_adj = torch.mm(torch.mm(D_inv_sqrt_mat, A), D_inv_sqrt_mat)
     
-    norm_adj = adj * d_inv_sqrt.unsqueeze(-1) * d_inv_sqrt.unsqueeze(-2)
-    
-    return I - norm_adj if use_laplacian else norm_adj
+    if use_laplacian:
+        # L = I - D^{-1/2} * A * D^{-1/2}
+        norm_laplacian = I - norm_adj
+        return norm_laplacian
+    else:
+        return norm_adj norm_adj
     
 class AverageMeter:
     def __init__(self):
