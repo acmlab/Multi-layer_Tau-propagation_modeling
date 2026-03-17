@@ -142,25 +142,26 @@ def spd_pad(matrix, padding, padding_val=1e-4):
     out[..., :matrix.shape[-2], :matrix.shape[-1]] = matrix
     return out
 
-def normalize_graph_matrix(adj_matrix, use_laplacian=False):
-
+def normalize_graph_matrix(adj_matrix, use_norm=False):
     A = torch.clamp(adj_matrix, min=0.0)
-    I = torch.eye(A.size(0), device=A.device)
+    A = 0.5 * (A + A.t())
+    I = torch.eye(A.size(0), device=A.device, dtype=A.dtype)
     A = A + I
-    # D_ii = sum_j A_ij
-    D = torch.sum(A, dim=1)
-    D_inv_sqrt = torch.pow(D, -0.5)
-    D_inv_sqrt[torch.isinf(D_inv_sqrt)] = 0.0
+    D = A.sum(dim=1)
+    D_inv_sqrt = torch.pow(D.clamp(min=1e-12), -0.5)
     D_inv_sqrt_mat = torch.diag(D_inv_sqrt)
+    L = I - D_inv_sqrt_mat @ A @ D_inv_sqrt_mat
+    L = 0.5 * (L + L.t())
     
-    norm_adj = torch.mm(torch.mm(D_inv_sqrt_mat, A), D_inv_sqrt_mat)
-    
-    if use_laplacian:
-        # L = I - D^{-1/2} * A * D^{-1/2}
-        norm_laplacian = I - norm_adj
-        return norm_laplacian
+    if use_norm:
+        eigenvalues = torch.linalg.eigvalsh(L)
+        max_eig = torch.max(eigenvalues)
+        if max_eig > 1e-5:
+            L_norm = L / max_eig
+            
+        return L_norm
     else:
-        return norm_adj norm_adj
+        return L
     
 class AverageMeter:
     def __init__(self):
