@@ -38,8 +38,8 @@ class MSClassifyNet(nn.Module):
 
     def forward(self, x, sc, fc):
         feature_vec = x
-        sc = normalize_graph_matrix(sc, use_laplacian=True)
-        fc = normalize_graph_matrix(fc, use_laplacian=True)
+        sc = normalize_graph_matrix(sc, use_norm=True)
+        fc = normalize_graph_matrix(fc, use_norm=True)
         # PDE processing
         out_sc, out_fc, usc, ufc, B_sc, B_fc, lambdaB = self.dual_PDE_sequence(
             feature_vec.unsqueeze(0), feature_vec.unsqueeze(0), sc, fc
