@@ -10,9 +10,9 @@ from brainsmash.mapgen.base import Base
 # ============================================================
 # 0. User paths
 # ============================================================
-coords_path = r"E:\OneDrive - University of North Carolina at Chapel Hill\Tingting_Dan\UNC_Work\My paper\ICML2023\vis\continuity_region.node_160.node"
-excel_path = r"E:\ACMLab_Data\ADNI-data_tau_amyloid_FDG_CT_info\amyloid_tau_FDG_CT\Tau_SUVR_Swapped_update_age.xlsx"
-lobe_path  = r"C:\Users\Tingting Dan\OneDrive - University of North Carolina at Chapel Hill\Tingting_Dan\UNC_Work\Multi-layer\region_labels_mapped.csv"
+coords_path = r"continuity_region.node"
+excel_path = r"Tau_SUVR.xlsx"
+lobe_path  = r"region_labels_mapped.csv"
 
 out_dir = r".\BrainSMASH_results"
 os.makedirs(out_dir, exist_ok=True)
