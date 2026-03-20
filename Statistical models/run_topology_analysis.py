@@ -18,12 +18,12 @@ warnings.filterwarnings("ignore")
 # ============================================================
 # 0. USER CONFIG & THEME SETTINGS
 # ============================================================
-SC_DIR = "/ram/USERS/bendan/ACMLab_DATA/ADNI/ADNI_tau_FC_SC/structure_prediction"
-FC_DIR = "/ram/USERS/bendan/ACMLab_DATA/ADNI/ADNI_tau_FC_SC/FC_Tau_denoised"
-TAU_EXCEL = "/ram/USERS/bendan/ACMLab_DATA/ADNI/ADNI_tau_FC_SC/Tau_SUVR_Swapped_update_age.xlsx"
+SC_DIR = "SC"
+FC_DIR = "FC"
+TAU_EXCEL = "Tau.xlsx"
 
-COORDS_PATH = "/ram/USERS/bendan/ACMLab_DATA/ADNI/ADNI_tau_FC_SC/continuity_region.node_160.node"
-MODULE_LABELS_CSV = "/ram/USERS/bendan/ACMLab_DATA/ADNI/ADNI_tau_FC_SC/region_functional_mapped.csv"
+COORDS_PATH = "continuity_region.node_160.node"
+MODULE_LABELS_CSV = "region_functional_mapped.csv"
 
 OUT_DIR = "./Topology_Final_Results"
 os.makedirs(OUT_DIR, exist_ok=True)
