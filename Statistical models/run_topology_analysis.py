@@ -1,186 +1,362 @@
 import os
 import re
+import json
+import warnings
+from pathlib import Path
+from typing import Dict, Tuple
+
 import numpy as np
 import pandas as pd
-import torch
-import bct  # pip install bctpy
-from scipy.stats import pearsonr
 import matplotlib.pyplot as plt
-from brainsmash.mapgen.base import Base
+
+import bct  
+from scipy.stats import pearsonr, wilcoxon
 from scipy.spatial.distance import pdist, squareform
+from scipy.sparse.csgraph import dijkstra
+warnings.filterwarnings("ignore")
 
 # ============================================================
-# 1. 路径设置 (请替换为你的实际路径)
+# 0. USER CONFIG & THEME SETTINGS
 # ============================================================
-# 直接读取你刚刚生成的极其方便的 .pt 文件！
-pt_file_path = r"C:\Users\Tingting Dan\OneDrive - University of North Carolina at Chapel Hill\Tingting_Dan\UNC_Work\Multi-layer\Statistical models\group_mean_SC_FC_torch.pt"
+SC_DIR = "/ram/USERS/bendan/ACMLab_DATA/ADNI/ADNI_tau_FC_SC/structure_prediction"
+FC_DIR = "/ram/USERS/bendan/ACMLab_DATA/ADNI/ADNI_tau_FC_SC/FC_Tau_denoised"
+TAU_EXCEL = "/ram/USERS/bendan/ACMLab_DATA/ADNI/ADNI_tau_FC_SC/Tau_SUVR_Swapped_update_age.xlsx"
 
-# 计算 BrainSMASH 和 提取 Delta Tau 用的数据
-coords_path = r"E:\OneDrive - University of North Carolina at Chapel Hill\Tingting_Dan\UNC_Work\My paper\ICML2023\vis\continuity_region.node_160.node"
-excel_path = r"E:\ACMLab_Data\ADNI-data_tau_amyloid_FDG_CT_info\amyloid_tau_FDG_CT\Tau_SUVR_Swapped_update_age.xlsx"
-network_label_path = r"C:\Users\Tingting Dan\OneDrive - University of North Carolina at Chapel Hill\Tingting_Dan\UNC_Work\Multi-layer\region_functional_mapped.csv"
+COORDS_PATH = "/ram/USERS/bendan/ACMLab_DATA/ADNI/ADNI_tau_FC_SC/continuity_region.node_160.node"
+MODULE_LABELS_CSV = "/ram/USERS/bendan/ACMLab_DATA/ADNI/ADNI_tau_FC_SC/region_functional_mapped.csv"
 
-out_dir = r".\Topology_Results"
-os.makedirs(out_dir, exist_ok=True)
+OUT_DIR = "./Topology_Final_Results"
+os.makedirs(OUT_DIR, exist_ok=True)
+
+N_NODES = 160
+N_SURROGATES = 1000
+
+# 经典顶刊配色 
+COLOR_SC = '#4dbcd5' 
+COLOR_FC = '#e64a35' 
+
+plt.rcParams.update({
+    "font.size": 12,
+    "axes.titlesize": 14,
+    "axes.labelsize": 13,
+    "xtick.labelsize": 11,
+    "ytick.labelsize": 11,
+    "axes.spines.top": False,
+    "axes.spines.right": False,
+    "axes.linewidth": 1.2,
+    "figure.dpi": 300,
+    "savefig.dpi": 300,
+})
+
+def get_stars(p):
+    if p < 0.001: return "***"
+    elif p < 0.01: return "**"
+    elif p < 0.05: return "*"
+    else: return ""
 
 # ============================================================
-# 2. 数据准备与预处理函数
+# 1. HELPERS & TAU EXTRACTION
 # ============================================================
+def normalize_subject_id(x): return str(x).strip().upper()
 def extract_node_num(col):
-    m = re.search(r'Node[_ ]?(\d+)', str(col))
+    m = re.search(r"Node[_ ]?(\d+)", str(col))
     return int(m.group(1)) if m else 10**9
 
-def get_empirical_delta_tau(excel_path):
-    print("Extracting empirical Delta Tau from excel...")
+def subject_id_from_filename(path: Path) -> str:
+    stem = path.stem
+    m = re.search(r"(\d+_S_\d+)", stem, flags=re.IGNORECASE)
+    if m: return normalize_subject_id(m.group(1))
+    return normalize_subject_id(stem.split("_")[0])
+
+def load_numeric_csv(path: str) -> np.ndarray:
+    for header in [None, 0]:
+        try:
+            df = pd.read_csv(path, header=header)
+            df_num = df.apply(pd.to_numeric, errors="coerce").dropna(axis=0, how="all").dropna(axis=1, how="all")
+            arr = df_num.to_numpy(dtype=float)
+            if arr.size > 0: return arr
+        except Exception: pass
+    try:
+        df = pd.read_csv(path, index_col=0)
+        arr = df.apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+        if arr.size > 0: return arr
+    except Exception: pass
+    raise ValueError(f"Could not parse numeric csv: {path}")
+
+def load_matrix_160(path: str) -> np.ndarray:
+    arr = load_numeric_csv(path)
+    if arr.shape[0] >= N_NODES and arr.shape[1] >= N_NODES: arr = arr[:N_NODES, :N_NODES]
+    return arr
+
+def load_modules(path: str) -> np.ndarray:
+    df = pd.read_csv(path, header=0)
+    vals = pd.to_numeric(df.iloc[:, 0], errors="coerce").dropna().to_numpy(dtype=int)
+    remap = {11: 10, 12: 11, 13: 12, 14: 13}
+    vals = np.array([remap.get(int(x), int(x)) for x in vals], dtype=int)
+    return vals
+
+def preprocess_matrix(W: np.ndarray, is_sc: bool = True) -> np.ndarray:
+    W = np.asarray(W, dtype=float)
+    W = 0.5 * (W + W.T)
+    np.fill_diagonal(W, 0.0)
+    if is_sc:
+        W[W < 0] = 0.0
+        W = np.log1p(W)
+    else:
+        W = np.clip(W, a_min=0, a_max=None)
+    mx = np.max(W)
+    if mx > 0: W = W / mx
+    return W
+
+def load_coords(path: str) -> np.ndarray:
+    coords_df = pd.read_csv(path, sep=r"\s+", header=None)
+    return coords_df.iloc[:, :3].values.astype(float)
+
+def fdr_bh(pvals: np.ndarray) -> np.ndarray:
+    pvals = np.asarray(pvals, dtype=float)
+    n = len(pvals)
+    order = np.argsort(pvals)
+    ranked = pvals[order]
+    q = np.empty(n, dtype=float)
+    prev = 1.0
+    for i in range(n - 1, -1, -1):
+        rank = i + 1
+        val = ranked[i] * n / rank
+        prev = min(prev, val)
+        q[i] = prev
+    q_corrected = np.empty(n, dtype=float)
+    q_corrected[order] = np.minimum(q, 1.0)
+    return q_corrected
+
+def safe_corr(x: np.ndarray, y: np.ndarray) -> Tuple[float, float]:
+    x, y = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
+    ok = np.isfinite(x) & np.isfinite(y)
+    if ok.sum() < 5 or np.std(x[ok]) < 1e-12 or np.std(y[ok]) < 1e-12: return np.nan, np.nan
+    r, p = pearsonr(x[ok], y[ok])
+    return float(r), float(p)
+
+def build_subject_tau_from_excel(excel_path: str) -> Dict[str, np.ndarray]:
     df = pd.read_excel(excel_path)
-    node_cols = sorted([col for col in df.columns if 'Node' in str(col)], key=extract_node_num)
-    
-    tau_avg_map = np.zeros(len(node_cols), dtype=float)
-    valid_count = 0
-    
-    for ptid, group in df.groupby('PTID'):
+    node_cols = sorted([c for c in df.columns if "Node" in str(c)], key=extract_node_num)
+    subject_tau = {}
+    for ptid, group in df.groupby("PTID"):
+        sid = normalize_subject_id(ptid)
         if len(group) < 2: continue
-        group = group.sort_values('EXAMDATE').iloc[:2]
-        tau_t1 = group.iloc[0][node_cols].values.astype(float)
-        tau_t2 = group.iloc[1][node_cols].values.astype(float)
-        age_t1, age_t2 = float(group.iloc[0]['AGE']), float(group.iloc[1]['AGE'])
-        
-        if np.isclose(age_t2 - age_t1, 0): continue
-        delta_tau = (tau_t2 - tau_t1) / (age_t2 - age_t1)
-        if np.any(np.isnan(delta_tau)): continue
-        
-        tau_avg_map += delta_tau
-        valid_count += 1
-        
-    return tau_avg_map / valid_count
-
-def load_data():
-    # 1. 直接从 .pt 文件加载矩阵！
-    print("Loading SC and FC matrices from .pt file...")
-    pt_data = torch.load(pt_file_path)
-    
-    # 提取 Ws 和 Wf 并转为 numpy 数组 (bctpy 需要 numpy)
-    SC = pt_data['Ws'].numpy()
-    FC = pt_data['Wf'].numpy()
-    
-    # 为了拓扑计算更稳定，我们对 FC 取绝对值并截断负连接，SC 本身是正的
-    FC = np.clip(FC, a_min=0, a_max=None)
-    np.fill_diagonal(SC, 0)
-    np.fill_diagonal(FC, 0)
-    
-    # 2. 坐标和距离矩阵
-    coords_df = pd.read_csv(coords_path, delim_whitespace=True, header=None)
-    coords = coords_df.iloc[:, :3].values.astype(float)
-    dist_mat = squareform(pdist(coords, metric='euclidean'))
-    
-    # 3. 网络标签 (1-13)，处理缺口 10
-    lobe_df = pd.read_csv(network_label_path, header=None)
-    network_labels = lobe_df.iloc[:, 0].values.astype(int)
-    network_labels[network_labels == 11] = 10
-    network_labels[network_labels == 12] = 11
-    network_labels[network_labels == 13] = 12
-    network_labels[network_labels == 14] = 13
-    
-    # 4. 经验 Tau 变化率
-    tau_map = get_empirical_delta_tau(excel_path)
-    
-    return SC, FC, dist_mat, network_labels, tau_map
+        group = group.sort_values("EXAMDATE")
+        g = group.iloc[[0, -1]]
+        tau_1, tau_2 = g.iloc[0][node_cols].values.astype(float), g.iloc[1][node_cols].values.astype(float)
+        age_1, age_2 = float(g.iloc[0]["AGE"]), float(g.iloc[1]["AGE"])
+        if not np.isfinite(age_1) or not np.isfinite(age_2) or age_2 <= age_1: continue
+        dtau = (tau_2 - tau_1) / (age_2 - age_1)
+        if not np.any(np.isnan(dtau)): subject_tau[sid] = dtau
+    return subject_tau
 
 # ============================================================
-# 3. 核心图论拓扑计算
+# 2. TOPOLOGY & BRAINSMASH
 # ============================================================
-def compute_graph_metrics(adj_matrix, community_labels):
-    # 1. Clustering Coefficient (Segregation)
-    CC = bct.clustering_coef_wu(adj_matrix)
-    
-    # 2. Betweenness Centrality (Integration)
-    # 将权重转为距离 (距离越短，连接越强)
-    dist_matrix = bct.weight_conversion(adj_matrix, 'lengths')
-    BC = bct.betweenness_wei(dist_matrix)
-    
-    # 3. Participation Coefficient (Mesoscale Hub)
-    PC = bct.participation_coef(adj_matrix, community_labels)
-    
-    return CC, BC, PC
+def nodal_efficiency_weighted(W):
+    n = W.shape[0]
+    D = np.full_like(W, np.inf, dtype=float)
+    pos = W > 0
+    D[pos] = 1.0 / W[pos]
+    np.fill_diagonal(D, 0.0)
+    sp = dijkstra(D, directed=False, unweighted=False)
+    eff = np.zeros(n, dtype=float)
+    for i in range(n):
+        d = sp[i].copy()
+        valid = np.isfinite(d) & (d > 0)
+        if np.any(valid): eff[i] = np.mean(1.0 / d[valid])
+    return eff
 
-# ============================================================
-# 4. BrainSMASH 零模型相关性计算
-# ============================================================
-def spatial_correlation_with_null(metric_map, tau_map, surrogates):
-    true_r, _ = pearsonr(metric_map, tau_map)
-    null_rs = np.zeros(surrogates.shape[0])
-    
-    for i in range(surrogates.shape[0]):
-        null_rs[i], _ = pearsonr(metric_map, surrogates[i, :])
-        
+def compute_topology(W: np.ndarray, modules: np.ndarray) -> Dict[str, np.ndarray]:
+    return {
+        "strength": np.asarray(np.sum(W, axis=1), dtype=float),
+        "clustering": np.asarray(bct.clustering_coef_wu(W), dtype=float),
+        "efficiency": np.asarray(nodal_efficiency_weighted(W), dtype=float),
+        "participation": np.asarray(bct.participation_coef(W, modules), dtype=float),
+    }
+
+def run_brainsmash_test(metric_map, tau_map, dist_mat, n_surrogates=1000):
+    from brainsmash.mapgen.base import Base
+    base = Base(x=tau_map, D=dist_mat)
+    surrogates = base(n=n_surrogates)
+    true_r, _ = safe_corr(metric_map, tau_map)
+    null_rs = np.array([safe_corr(metric_map, s)[0] for s in surrogates], dtype=float)
+    null_rs = null_rs[np.isfinite(null_rs)]
     p_null = (np.sum(np.abs(null_rs) >= np.abs(true_r)) + 1) / (len(null_rs) + 1)
-    return true_r, p_null
+    return float(true_r), float(p_null)
+
+def fit_ols(y, X):
+    ok = np.isfinite(y) & np.all(np.isfinite(X), axis=1)
+    y, X = y[ok], X[ok]
+    if len(y) < X.shape[1] + 5: return {"r2": np.nan}
+    mu, sd = np.mean(X, axis=0), np.std(X, axis=0)
+    sd[sd<1e-12]=1.0
+    Xz = (X - mu) / sd
+    Xd = np.column_stack([np.ones(len(y)), Xz])
+    beta, *_ = np.linalg.lstsq(Xd, y, rcond=None)
+    yhat = Xd @ beta
+    ss_tot = np.sum((y - np.mean(y)) ** 2)
+    return {"r2": 1 - (np.sum((y - yhat) ** 2) / ss_tot) if ss_tot > 0 else np.nan}
 
 # ============================================================
-# 5. 可视化绘图函数
+# 3. MAIN WORKFLOW
 # ============================================================
-def plot_correlation(metric_map, tau_map, metric_name, network_name, r_val, p_null, out_path):
-    plt.figure(figsize=(4.5, 4), dpi=300)
-    
-    # 散点颜色区分 SC 和 FC
-    color = 'teal' if network_name == 'FC' else 'coral'
-    
-    plt.scatter(metric_map, tau_map, color=color, alpha=0.7, edgecolors='k', s=40)
-    
-    # 线性拟合
-    m, b = np.polyfit(metric_map, tau_map, 1)
-    plt.plot(metric_map, m*metric_map + b, color='red', linewidth=2, linestyle='--')
-    
-    plt.xlabel(f'{metric_name} ({network_name})', fontsize=12, fontweight='bold')
-    plt.ylabel('Tau Accumulation Rate (\u0394Tau)', fontsize=12, fontweight='bold')
-    
-    # 显著性标星号颜色
-    p_color = 'red' if p_null < 0.05 else 'black'
-    
-    plt.text(0.05, 0.85, f'$r = {r_val:.3f}$\n$p_{{null}} = {p_null:.4f}$', 
-             transform=plt.gca().transAxes, fontsize=12, color=p_color, fontweight='bold',
-             bbox=dict(facecolor='white', alpha=0.8, edgecolor='none'))
-    
-    plt.tight_layout()
-    plt.savefig(out_path)
-    plt.close()
+print("\n--- Starting Topology Analysis Beyond Strength ---")
+modules = load_modules(MODULE_LABELS_CSV)
+coords = load_coords(COORDS_PATH)
+dist_mat = squareform(pdist(coords, metric="euclidean"))
+subject_tau = build_subject_tau_from_excel(TAU_EXCEL)
+
+sc_files = {subject_id_from_filename(p): str(p) for p in Path(SC_DIR).glob("*.csv")}
+fc_files = {subject_id_from_filename(p): str(p) for p in Path(FC_DIR).glob("*.csv")}
+common_subs = sorted(set(sc_files.keys()) & set(fc_files.keys()) & set(subject_tau.keys()))
+print(f"Matched {len(common_subs)} subjects.")
+
+metric_names = ["strength", "clustering", "efficiency", "participation"]
+subject_r2_rows, subject_ablation_rows = [], []
+all_sc_mats, all_fc_mats = [], []
+
+for sid in common_subs:
+    try:
+        Wsc = preprocess_matrix(load_matrix_160(sc_files[sid]), is_sc=True)
+        Wfc = preprocess_matrix(load_matrix_160(fc_files[sid]), is_sc=False)
+        all_sc_mats.append(Wsc); all_fc_mats.append(Wfc)
+        tau_y = subject_tau[sid]
+        topo_sc, topo_fc = compute_topology(Wsc, modules), compute_topology(Wfc, modules)
+        
+        for modality, topo_dict in [("SC", topo_sc), ("FC", topo_fc)]:
+            r2_strength = fit_ols(tau_y, np.column_stack([topo_dict["strength"]]))["r2"]
+            X_full = np.column_stack([topo_dict["strength"], topo_dict["clustering"], topo_dict["efficiency"], topo_dict["participation"]])
+            r2_full = fit_ols(tau_y, X_full)["r2"]
+            subject_r2_rows.append({"Subject": sid, "Modality": modality, "Delta_R2": r2_full - r2_strength})
+            
+            for em in ["clustering", "efficiency", "participation"]:
+                r2_pair = fit_ols(tau_y, np.column_stack([topo_dict["strength"], topo_dict[em]]))["r2"]
+                subject_ablation_rows.append({"Subject": sid, "Modality": modality, "ExtraMetric": em, "Delta_R2_pair": r2_pair - r2_strength})
+    except Exception as e:
+        pass
+
+r2_df = pd.DataFrame(subject_r2_rows)
+ablation_df = pd.DataFrame(subject_ablation_rows)
+
+print("Running Group-level BrainSMASH...")
+sc_group = np.mean(np.stack(all_sc_mats, axis=0), axis=0)
+fc_group = np.mean(np.stack(all_fc_mats, axis=0), axis=0)
+tau_group = np.mean(np.stack([subject_tau[sid] for sid in common_subs], axis=0), axis=0)
+
+topo_sc_group, topo_fc_group = compute_topology(sc_group, modules), compute_topology(fc_group, modules)
+group_rows = []
+for modality, topo_dict in [("SC", topo_sc_group), ("FC", topo_fc_group)]:
+    for m in metric_names:
+        r_true, p_null = run_brainsmash_test(topo_dict[m], tau_group, dist_mat, N_SURROGATES)
+        group_rows.append({"Modality": modality, "Metric": m, "Group_r": r_true, "P_null": p_null})
+
+group_df = pd.DataFrame(group_rows)
+group_df["P_FDR"] = np.nan
+for modality in ["SC", "FC"]:
+    idx = group_df["Modality"] == modality
+    group_df.loc[idx, "P_FDR"] = fdr_bh(group_df.loc[idx, "P_null"].values)
 
 # ============================================================
-# 6. 主程序运行
+# 4. PLOTTING (1x5 Grid for Appendix Figure S1)
 # ============================================================
-print("\n--- Starting Topology Analysis ---")
-SC, FC, dist_mat, network_labels, tau_map = load_data()
+print("Generating Figure 1 (1x5 Grid)...")
 
-print("\n1. Computing Graph Metrics for 160 ROIs...")
-CC_sc, BC_sc, PC_sc = compute_graph_metrics(SC, network_labels)
-CC_fc, BC_fc, PC_fc = compute_graph_metrics(FC, network_labels)
+fig, axes = plt.subplots(1, 5, figsize=(20, 5))
+fig.subplots_adjust(hspace=0.3, wspace=0.3)
 
-print("\n2. Generating 1000 BrainSMASH Spatial Null Surrogates...")
-base = Base(x=tau_map, D=dist_mat)
-surrogates = base(n=1000)
+labels = ["clustering", "efficiency", "participation"]
 
-print("\n3. Testing Spatial Correlations...")
-results = []
-metrics = [
-    ('Clustering_Coef', CC_sc, CC_fc),
-    ('Betweenness', BC_sc, BC_fc),
-    ('Participation_Coef', PC_sc, PC_fc)
-]
+# ---- Subplot 1: SC Specific Contributions Barplot ----
+ax = axes[0]
+vals = [np.mean(ablation_df[(ablation_df["Modality"] == "SC") & (ablation_df["ExtraMetric"] == m)]["Delta_R2_pair"]) for m in labels]
+errs = [np.std(ablation_df[(ablation_df["Modality"] == "SC") & (ablation_df["ExtraMetric"] == m)]["Delta_R2_pair"]) for m in labels]
+ax.bar(range(len(labels)), vals, yerr=errs, capsize=4, color=COLOR_SC, alpha=0.8, edgecolor="black")
+ax.axhline(0, color="black", linewidth=1.2)
+ax.set_xticks(range(len(labels)))
+ax.set_xticklabels([l.capitalize() for l in labels], rotation=20)
+ax.set_title("SC Specific Contributions", fontweight='bold')
+ax.set_ylabel(r"$\Delta R^2$ (Strength + Metric - Strength Only)", fontweight='bold')
 
-for name, sc_val, fc_val in metrics:
-    r_sc, p_sc = spatial_correlation_with_null(sc_val, tau_map, surrogates)
-    r_fc, p_fc = spatial_correlation_with_null(fc_val, tau_map, surrogates)
-    
-    results.append({'Metric': name, 'Network': 'SC', 'r': r_sc, 'p_null': p_sc})
-    results.append({'Metric': name, 'Network': 'FC', 'r': r_fc, 'p_null': p_fc})
-    
-    print(f"{name:18s} | SC: r={r_sc:6.3f}, p_null={p_sc:.4f}  |  FC: r={r_fc:6.3f}, p_null={p_fc:.4f}")
-    
-    # 画图
-    plot_correlation(sc_val, tau_map, name.replace('_', ' '), 'SC', r_sc, p_sc, os.path.join(out_dir, f"{name}_SC_Tau.pdf"))
-    plot_correlation(fc_val, tau_map, name.replace('_', ' '), 'FC', r_fc, p_fc, os.path.join(out_dir, f"{name}_FC_Tau.pdf"))
+# ---- Subplot 2: FC Specific Contributions Barplot ----
+ax = axes[1]
+vals = [np.mean(ablation_df[(ablation_df["Modality"] == "FC") & (ablation_df["ExtraMetric"] == m)]["Delta_R2_pair"]) for m in labels]
+errs = [np.std(ablation_df[(ablation_df["Modality"] == "FC") & (ablation_df["ExtraMetric"] == m)]["Delta_R2_pair"]) for m in labels]
+ax.bar(range(len(labels)), vals, yerr=errs, capsize=4, color=COLOR_FC, alpha=0.8, edgecolor="black")
+ax.axhline(0, color="black", linewidth=1.2)
+ax.set_xticks(range(len(labels)))
+ax.set_xticklabels([l.capitalize() for l in labels], rotation=20)
+ax.set_title("FC Specific Contributions", fontweight='bold')
 
-# 保存结果表
-df_res = pd.DataFrame(results)
-df_res.to_csv(os.path.join(out_dir, "Topology_Tau_Correlation_Results.csv"), index=False)
-print(f"\n✅ All done! Results and figures saved to: {out_dir}")
+# ---- Subplot 3: SC Macro-scale Spatial Corr Barplot ----
+ax = axes[2]
+df_sc = group_df[group_df["Modality"] == "SC"]
+vals = df_sc["Group_r"].values
+bars = ax.bar(range(len(metric_names)), vals, color=COLOR_SC, alpha=0.8, edgecolor="black")
+ax.axhline(0, color="black", linewidth=1.2)
+ax.set_xticks(range(len(metric_names)))
+ax.set_xticklabels([m.capitalize() for m in metric_names], rotation=20)
+ax.set_title("SC Macro-scale Spatial Corr", fontweight='bold')
+ax.set_ylabel("Correlation with Group Mean $\Delta$Tau", fontweight='bold')
+for i, bar in enumerate(bars):
+    q = df_sc["P_FDR"].values[i]
+    stars = get_stars(q)
+    if stars:
+        yval = bar.get_height()
+        offset = np.sign(yval) * 0.02
+        ax.text(bar.get_x() + bar.get_width()/2, yval + offset, stars, ha='center', va='bottom' if yval > 0 else 'top', color='red', fontweight='bold', fontsize=16)
+
+# ---- Subplot 4: FC Macro-scale Spatial Corr Barplot ----
+ax = axes[3]
+df_fc = group_df[group_df["Modality"] == "FC"]
+vals = df_fc["Group_r"].values
+bars = ax.bar(range(len(metric_names)), vals, color=COLOR_FC, alpha=0.8, edgecolor="black")
+ax.axhline(0, color="black", linewidth=1.2)
+ax.set_xticks(range(len(metric_names)))
+ax.set_xticklabels([m.capitalize() for m in metric_names], rotation=20)
+ax.set_title("FC Macro-scale Spatial Corr", fontweight='bold')
+for i, bar in enumerate(bars):
+    q = df_fc["P_FDR"].values[i]
+    stars = get_stars(q)
+    if stars:
+        yval = bar.get_height()
+        offset = np.sign(yval) * 0.02
+        ax.text(bar.get_x() + bar.get_width()/2, yval + offset, stars, ha='center', va='bottom' if yval > 0 else 'top', color='black', fontweight='bold', fontsize=16)
+
+# ---- Subplot 5: Delta R2 Boxplot (Micro-scale) ----
+ax = axes[4]
+sc_dr2 = r2_df[r2_df["Modality"] == "SC"]["Delta_R2"].dropna().values
+fc_dr2 = r2_df[r2_df["Modality"] == "FC"]["Delta_R2"].dropna().values
+
+bp = ax.boxplot([sc_dr2, fc_dr2], labels=["SC", "FC"], widths=0.5, patch_artist=True)
+for patch, color in zip(bp['boxes'], [COLOR_SC, COLOR_FC]):
+    patch.set_facecolor(color)
+    patch.set_alpha(0.8)
+for median in bp['medians']: median.set(color="white", linewidth=2.5)
+
+ax.axhline(0, color="black", linestyle="--", linewidth=1.2)
+ax.set_ylabel(r"$\Delta R^2$ (Full Topology - Strength Only)", fontweight="bold")
+ax.set_title("Higher-Order Topology Explains\nAdditional Variance", fontweight="bold")
+
+_, p_sc = wilcoxon(sc_dr2)
+_, p_fc = wilcoxon(fc_dr2)
+ax.text(1, np.max(sc_dr2)*0.9, get_stars(p_sc), ha="center", color="red", fontsize=16, fontweight='bold')
+ax.text(2, np.max(fc_dr2)*0.9, get_stars(p_fc), ha="center", color="red", fontsize=16, fontweight='bold')
+
+y_min_ab = min(axes[0].get_ylim()[0], axes[1].get_ylim()[0])
+y_max_ab = max(axes[0].get_ylim()[1], axes[1].get_ylim()[1])
+axes[0].set_ylim(y_min_ab, y_max_ab)
+axes[1].set_ylim(y_min_ab, y_max_ab)
+
+y_min_mc = min(axes[2].get_ylim()[0], axes[3].get_ylim()[0])
+y_max_mc = max(axes[2].get_ylim()[1], axes[3].get_ylim()[1])
+axes[2].set_ylim(y_min_mc, y_max_mc)
+axes[3].set_ylim(y_min_mc, y_max_mc)
+
+plt.suptitle("Appendix Figure S1: Connectome Nodal Topology Contributes Beyond Nodal Strength", fontweight='bold', fontsize=16)
+plt.tight_layout()
+plt.savefig(os.path.join(OUT_DIR, "Figure_S1_Appendix.svg"))
+plt.close()
+
+print("Figure_S1_Appendix.svg generated successfully in:", OUT_DIR)
