@@ -31,7 +31,6 @@ os.makedirs(OUT_DIR, exist_ok=True)
 N_NODES = 160
 N_SURROGATES = 1000
 
-# 经典顶刊配色 
 COLOR_SC = '#4dbcd5' 
 COLOR_FC = '#e64a35' 
 
