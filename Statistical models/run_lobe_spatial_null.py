@@ -15,10 +15,10 @@ ROI_NUM = '160'
 OUT_DIR = f"./SpatialNull_Python"
 os.makedirs(OUT_DIR, exist_ok=True)
 
-FC_MAT_PATH = r"C:\Users\Tingting Dan\OneDrive - University of North Carolina at Chapel Hill\Tingting_Dan\UNC_Work\Multi-layer\Results\160\FC.mat"             # 你的 FC 矩阵 (包含 mean_matrix)
-T_VECTOR_PATH = r"C:\Users\Tingting Dan\OneDrive - University of North Carolina at Chapel Hill\Tingting_Dan\UNC_Work\Multi-layer\Results\160\TVector.txt"      # 你的 Tau 变化速率向量
-COORDS_PATH = r"E:\OneDrive - University of North Carolina at Chapel Hill\Tingting_Dan\UNC_Work\My paper\ICML2023\vis\continuity_region.node_160.node"      # 160 个脑区的空间坐标文件
-LABEL_MAT_PATH = r"C:\Users\Tingting Dan\OneDrive - University of North Carolina at Chapel Hill\Tingting_Dan\UNC_Work\Multi-layer\SC_regions_label.mat"               # Yeo7 脑叶标签 (包含 lobe_index_sc)
+FC_MAT_PATH = r"FC.mat"          
+T_VECTOR_PATH = r"TVector.txt"      
+COORDS_PATH = r"continuity_region.node_160.node"     
+LABEL_MAT_PATH = r"\SC_regions_label.mat"               #  lobe_index_sc
 
 THRESHOLD = 0.2  
 NUM_SURROGATES = 1000 
@@ -151,4 +151,4 @@ res_df = pd.DataFrame({
 })
 res_df.to_csv(os.path.join(OUT_DIR, "Lobe_Correlation_Stats2.csv"), index=False)
 
-print(f"All Done! The matrix is completely bulletproof now. Results saved to {OUT_DIR}")
+print(f"All Done! Results saved to {OUT_DIR}")
