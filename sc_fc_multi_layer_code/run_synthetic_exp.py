@@ -13,7 +13,7 @@ import argparse
 import matplotlib
 matplotlib.use('Agg') 
 import matplotlib.pyplot as plt
-# os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+
 # ============================================================
 # 1. Reproducibility & Graph Utils
 # ============================================================
@@ -21,12 +21,12 @@ def set_seed(seed: int = 42) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+
 parser = argparse.ArgumentParser(description="Train PINN for regression")
-parser.add_argument("--data_path", type=str, default="dataresult_usuf", help="Path to the dataset folder")
-parser.add_argument("--sample", type=int, default=300, help="Learning rate")
-parser.add_argument("--ratio", type=float, default=0.4, help="Number of training epochs")
-parser.add_argument("--decay", type=float, default=1e-7, help="Number of training epochs")
-parser.add_argument("--lr", type=float, default=2e-3, help="Number of training epochs")
+parser.add_argument("--sample", type=int, default=300, help="Sample")
+parser.add_argument("--ratio", type=float, default=0.4, help="Ratio of SC/FC")
+parser.add_argument("--decay", type=float, default=1e-7, help="Decay")
+parser.add_argument("--lr", type=float, default=2e-3, help="learning rate")
 args = parser.parse_args()
 
 def normalize_graph_matrix(adj_matrix: torch.Tensor) -> torch.Tensor:
@@ -45,6 +45,7 @@ def normalize_graph_matrix(adj_matrix: torch.Tensor) -> torch.Tensor:
         L = L / max_eig
         
     return L
+
 def make_sparse_symmetric_graph(n_nodes: int, density: float, seed: int = 0) -> torch.Tensor:
     g = torch.Generator().manual_seed(seed)
     W = torch.randn(n_nodes, n_nodes, generator=g).abs()
@@ -66,12 +67,8 @@ class SyntheticConfig:
     obs_noise: float = 0.05
     init_noise: float = 0.02
     rho_s: float = args.ratio 
-    # c_s: float = 0.55
-    # c_f: float = 0.25
     c_s: float = 0.3
     c_f: float = 0.3
-    # lambda_s: float = 0.18
-    # lambda_f: float = 0.12
     lambda_s: float = 0.12
     lambda_f: float = 0.12
     coupling_rank: int = 5
@@ -95,12 +92,32 @@ class SyntheticTauDataset(Dataset):
     def __getitem__(self, idx):
         return {"x0": self.x0[idx], "x1": self.x1[idx], "usT": self.usT[idx], "ufT": self.ufT[idx], "us0": self.us0[idx], "uf0": self.uf0[idx]}
 
+class GroundTruthEmissionMLP(nn.Module):
+    def __init__(self, n_nodes, hidden_dim=128):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(n_nodes, hidden_dim),
+            nn.Tanh(), 
+            nn.Linear(hidden_dim, n_nodes),
+            nn.Softplus()
+        )
+        
+        self.net[0].weight.data.copy_(torch.eye(hidden_dim, n_nodes))
+        
+        self.net[2].weight.data.copy_(torch.eye(n_nodes, hidden_dim))
+
+    def forward(self, x):
+        return self.net(x)
+
 def generate_synthetic_dataset(Ls, Lf, config):
     set_seed(config.seed)
     n = config.n_nodes
     g = torch.Generator().manual_seed(config.seed)
     Ms_gt = (torch.randn(n, config.coupling_rank, generator=g)*0.08) @ (torch.randn(n, config.coupling_rank, generator=g)*0.08).t()
     Mf_gt = (torch.randn(n, config.coupling_rank, generator=g)*0.08) @ (torch.randn(n, config.coupling_rank, generator=g)*0.08).t()
+    
+    gt_emission = GroundTruthEmissionMLP(n)
+    gt_emission.eval() 
     
     x0_list, x1_list, us0_list, uf0_list, usT_list, ufT_list = [], [], [], [], [], []
     for _ in range(config.n_subjects):
@@ -112,7 +129,10 @@ def generate_synthetic_dataset(Ls, Lf, config):
         uf0 = ((1.0 - config.rho_s) * x0 + config.init_noise * torch.randn(n)).clamp(min=0.0)
 
         usT, ufT = euler_integrate_coupled(us0, uf0, Ls, Lf, Ms_gt, Mf_gt, config.c_s, config.c_f, config.lambda_s, config.lambda_f, config.total_time, config.dt)
-        x1 = (usT + ufT + config.obs_noise * torch.randn(n)).clamp(min=0.0)
+        
+        clean_x1 = gt_emission(usT + ufT).detach()
+        heterogeneous_noise_scale = torch.rand(n) * config.obs_noise + 0.01
+        x1 = (clean_x1 + heterogeneous_noise_scale * torch.randn(n)).clamp(min=0.0)
         
         x0_list.append(x0); x1_list.append(x1); us0_list.append(us0); uf0_list.append(uf0); usT_list.append(usT); ufT_list.append(ufT)
 
@@ -135,6 +155,14 @@ class CoupledTauModel(nn.Module):
         super().__init__()
         self.total_time, self.dt = total_time, dt
         self.init_split = GatedInitializer(n_nodes, hidden_dim)
+        
+        self.decoder = nn.Sequential(
+            nn.Linear(n_nodes, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, n_nodes),
+            nn.Softplus() 
+        )
+        
         self.Ms_A, self.Ms_B = nn.Parameter(0.05 * torch.randn(n_nodes, rank)), nn.Parameter(0.05 * torch.randn(n_nodes, rank))
         self.Mf_A, self.Mf_B = nn.Parameter(0.05 * torch.randn(n_nodes, rank)), nn.Parameter(0.05 * torch.randn(n_nodes, rank))
         self.raw_cs, self.raw_cf = nn.Parameter(torch.tensor(0.0)), nn.Parameter(torch.tensor(0.0))
@@ -150,7 +178,11 @@ class CoupledTauModel(nn.Module):
             dus = -c_s * (us @ Ls.t()) + l_s * (uf @ Ms.t())
             duf = -c_f * (uf @ Lf.t()) + l_f * (us @ Mf.t())
             us, uf = (us + self.dt * dus).clamp(min=0.0), (uf + self.dt * duf).clamp(min=0.0)
-        return {"x1_hat": us + uf, "usT_hat": us, "ufT_hat": uf}
+            
+        latent_sum = us + uf
+        x1_hat = self.decoder(latent_sum)
+        
+        return {"x1_hat": x1_hat, "usT_hat": us, "ufT_hat": uf}
 
 # ============================================================
 # 4. Global Attribution Metrics & Training
@@ -162,7 +194,6 @@ def corrcoef_torch(x, y):
 def compute_metrics(batch, outputs):
     gt_s_sum = batch["usT"].sum().clamp(min=1e-8)
     gt_f_sum = batch["ufT"].sum().clamp(min=1e-8)
-    
     pred_s_sum = outputs["usT_hat"].sum().clamp(min=1e-8)
     pred_f_sum = outputs["ufT_hat"].sum().clamp(min=1e-8)
     
@@ -182,9 +213,8 @@ def train_eval_split(dataset, train_idx, val_idx, Ls, Lf, n_epochs=150, device="
     
     model = CoupledTauModel(n_nodes=160).to(device)
     Ls, Lf = Ls.to(device), Lf.to(device)
-    # optimizer = torch.optim.Adam(model.parameters(), lr=2e-3, weight_decay=1e-5)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.decay)
-    # optimizer = torch.optim.Adam(model.parameters(), lr=5e-3, weight_decay=1e-5)
+    
     for epoch in range(n_epochs):
         model.train()
         for batch in train_loader:
@@ -218,19 +248,17 @@ def run_5fold_cv(dataset, Ls, Lf, device="cpu"):
     return summary
 
 # ============================================================
-# 5. Execution & Plotting (The Ultimate Defense Figure)
+# 5. Execution & Plotting
 # ============================================================
 if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
-    # n_nodes = 160
-    # Ws = make_sparse_symmetric_graph(n_nodes, density=0.08, seed=1)
-    # Wf = make_sparse_symmetric_graph(n_nodes, density=0.25, seed=2)
+    data_path = "/ram/USERS/bendan/ACMLab_DATA/ADNI/ADNI_tau_FC_SC/group_average_results/group_mean_SC_FC_torch.pt"
+    # Ws = make_sparse_symmetric_graph(160, density=0.08, seed=1)
+    # Wf = make_sparse_symmetric_graph(160, density=0.25, seed=2)
     # Ls, Lf = normalize_graph_matrix(Ws), normalize_graph_matrix(Wf)
-    data_path = "group_mean_SC_FC_torch.pt"
 
     data = torch.load(data_path, map_location="cpu")
-
     Ws = data["Ws"].float()
     Wf = data["Wf"].float()
     Ls = data["Ls"].float()
@@ -243,7 +271,6 @@ if __name__ == "__main__":
     
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 5), dpi=300)
 
-    # Panel A: Attribution Magnitude
     gt_sc, gt_fc = cv_summary['gt_sc_weight']['mean'], 1 - cv_summary['gt_sc_weight']['mean']
     pred_sc, pred_fc = cv_summary['pred_sc_weight']['mean'], 1 - cv_summary['pred_sc_weight']['mean']
     pred_sc_std, pred_fc_std = cv_summary['pred_sc_weight']['std'], cv_summary['pred_sc_weight']['std']
@@ -265,7 +292,6 @@ if __name__ == "__main__":
     for i, (val, std) in enumerate(zip([pred_sc, pred_fc], [pred_sc_std, pred_fc_std])):
         ax1.text(x_pos[i] + bar_width/2, val + 0.05, f'{val:.3f}', ha='center', fontweight='bold')
 
-    # Panel B: Spatial Correlation
     corrs = [cv_summary['us_corr']['mean'], cv_summary['uf_corr']['mean']]
     stds = [cv_summary['us_corr']['std'], cv_summary['uf_corr']['std']]
     
