@@ -253,7 +253,7 @@ def run_5fold_cv(dataset, Ls, Lf, device="cpu"):
 if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
-    data_path = "/ram/USERS/bendan/ACMLab_DATA/ADNI/ADNI_tau_FC_SC/group_average_results/group_mean_SC_FC_torch.pt"
+    data_path = "group_mean_SC_FC_torch.pt"
     # Ws = make_sparse_symmetric_graph(160, density=0.08, seed=1)
     # Wf = make_sparse_symmetric_graph(160, density=0.25, seed=2)
     # Ls, Lf = normalize_graph_matrix(Ws), normalize_graph_matrix(Wf)
