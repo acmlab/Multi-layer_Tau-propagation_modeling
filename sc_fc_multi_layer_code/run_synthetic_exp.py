@@ -26,7 +26,7 @@ parser = argparse.ArgumentParser(description="Train PINN for prediction")
 parser.add_argument("--sample", type=int, default=300, help="Sample")
 parser.add_argument("--ratio", type=float, default=0.6, help="Ratio of SC/FC")
 parser.add_argument("--decay", type=float, default=1e-6, help="Decay")
-parser.add_argument("--lr", type=float, default=5e-3, help="learning rate")
+parser.add_argument("--lr", type=float, default=2e-3, help="learning rate")
 args = parser.parse_args()
 
 def normalize_graph_matrix(adj_matrix: torch.Tensor) -> torch.Tensor:
