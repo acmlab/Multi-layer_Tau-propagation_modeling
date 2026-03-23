@@ -22,7 +22,7 @@ def set_seed(seed: int = 42) -> None:
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-parser = argparse.ArgumentParser(description="Train PINN for regression")
+parser = argparse.ArgumentParser(description="Train PINN for prediction")
 parser.add_argument("--sample", type=int, default=300, help="Sample")
 parser.add_argument("--ratio", type=float, default=0.6, help="Ratio of SC/FC")
 parser.add_argument("--decay", type=float, default=1e-6, help="Decay")
