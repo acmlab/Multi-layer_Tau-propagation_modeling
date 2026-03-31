@@ -118,14 +118,16 @@ The model integrates:
 
 ## 🧪 Usage
 
+- **Create the environment from the yaml file**
+```bash
+conda env create -f environment.yml
+```
+- **Activate the environment**
+```bash
+conda activate SCFC
+```
+- **Run the tau propagation model prediction**
+
 ```bash
 python model_prediction.py
 ```
-
-## Installation
-
-# Create the environment from the yaml file
-conda env create -f environment.yml
-
-# Activate the environment
-conda activate SCFC
